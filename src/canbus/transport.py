@@ -372,7 +372,7 @@ class IsoTpTransport:
         # 2. Wait for Flow Control from receiver
         fc = self._wait_for_flow_control()
         block_size = fc.block_size
-        st_min_sec = fc.st_min / 1000.0  # convert ms → s
+        st_min_sec = fc.st_min / 1000.0
 
         # 3. Send Consecutive Frames
         seq = 1

@@ -314,9 +314,23 @@ class UDSClient:
         resp = self._send_request(request)
 
         # Response: 74 <lengthFormatId> <maxBlockLength...>
+        # Some ECUs (e.g. boot flash) return only [0x74] with no length field;
+        # return max_block_length=0 so the caller can apply its own fallback.
+        if len(resp) < 2:
+            logger.info(
+                "Download accepted (no length field): addr=0x%X size=0x%X, "
+                "caller will use fallback block size",
+                memory_address, memory_size,
+            )
+            return DownloadResponse(max_block_length=0)
+
         length_format = resp[1]
         max_bl_len = (length_format >> 4) & 0x0F  # number of bytes for maxBlockLength
-        max_block_length = int.from_bytes(resp[2:2 + max_bl_len], "big")
+        max_block_length = (
+            int.from_bytes(resp[2:2 + max_bl_len], "big")
+            if max_bl_len > 0 and len(resp) >= 2 + max_bl_len
+            else 0
+        )
 
         logger.info(
             "Download accepted: addr=0x%X size=0x%X maxBlock=%d",

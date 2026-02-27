@@ -1,9 +1,11 @@
 """FlashWorker — runs Flasher.execute() in a QThread with Qt signal bridging."""
 
 import logging
+from typing import Union
 
 from PySide6.QtCore import QThread, Signal
 
+from flash.boot_flasher import BootFlasher
 from flash.flasher import Flasher, FlashError
 
 logger = logging.getLogger(__name__)
@@ -30,7 +32,7 @@ class FlashWorker(QThread):
     finished_ok = Signal()             # flash completed successfully
     finished_error = Signal(str)       # flash failed with error message
 
-    def __init__(self, flasher: Flasher, parent=None) -> None:
+    def __init__(self, flasher: Union[Flasher, BootFlasher], parent=None) -> None:
         super().__init__(parent)
         self._flasher = flasher
 

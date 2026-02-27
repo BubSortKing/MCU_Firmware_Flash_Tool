@@ -15,11 +15,13 @@ class CANSettings:
     rx_id: int = 0x7AA
 
     # CAN FD timing parameters (for PCAN USB FD, 80 MHz clock)
+    # Nominal (500 kbit/s, 80% SP): 80 MHz / (8 × 20 TQ) = 500 kbps, SP = (1+15)/20 = 80%
+    # Data    (2 Mbit/s,  80% SP): 80 MHz / (4 × 10 TQ) = 2 Mbps,   SP = (1+7)/10  = 80%
     f_clock_mhz: int = 80
-    nom_brp: int = 10
-    nom_tseg1: int = 12
-    nom_tseg2: int = 3
-    nom_sjw: int = 1
+    nom_brp: int = 8
+    nom_tseg1: int = 15
+    nom_tseg2: int = 4
+    nom_sjw: int = 4
     data_brp: int = 4
     data_tseg1: int = 7
     data_tseg2: int = 2

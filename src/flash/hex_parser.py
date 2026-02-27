@@ -19,7 +19,7 @@ import struct
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 import bincopy
 
@@ -56,6 +56,22 @@ class FirmwareImage:
     def __init__(self, file_path: str, segments: list[MemorySegment]) -> None:
         self.file_path = file_path
         self.segments = segments
+        self._download_address: Optional[int] = None
+
+    @property
+    def download_address(self) -> int:
+        """Address sent to ECU in RequestDownload (0x34) and Erase RoutineControl.
+
+        Defaults to start_address (the address embedded in the firmware file),
+        but can be overridden by the UI when the user types a different address.
+        """
+        if self._download_address is not None:
+            return self._download_address
+        return self.start_address
+
+    @download_address.setter
+    def download_address(self, value: int) -> None:
+        self._download_address = value
 
     @property
     def start_address(self) -> int:

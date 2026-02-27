@@ -2,18 +2,20 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
     QMessageBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from canbus.pcan_driver import PCANDriver, PCANDriverError
 from config.settings import CANSettings
+from flash.boot_flasher import BootFlasher
 from flash.flasher import Flasher, FlashState
 from flash.hex_parser import FirmwareImage
 from ui.flash_worker import FlashWorker
@@ -33,22 +35,29 @@ class MainWindow(QMainWindow):
 
     Layout::
 
-        +------------------------------------------+
-        | ConnectionPanel  |  FileSelector          |
-        +------------------------------------------+
-        | FlashProgressBar                          |
-        +------------------------------------------+
-        | LogViewer (expanding)                     |
-        +------------------------------------------+
-        | StatusIndicator (status bar)              |
-        +------------------------------------------+
+        +-----------------------------------------------+
+        | ConnectionPanel | QTabWidget                       |
+        |                 |  [Flash App] [Flash Config] [Flash Boot] |
+        |                 |  (App: C0 + C1 FileSelector)     |
+        |                 |  (Config: single FileSelector)   |
+        |                 |  (Boot: single FileSelector)     |
+        +-----------------------------------------------+
+        | FlashProgressBar                               |
+        +-----------------------------------------------+
+        | LogViewer (expanding)                          |
+        +-----------------------------------------------+
+        | StatusIndicator (status bar)                   |
+        +-----------------------------------------------+
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self._driver: Optional[PCANDriver] = None
-        self._firmware: Optional[FirmwareImage] = None
-        self._worker: Optional[FlashWorker] = None
+        self._driver:          Optional[PCANDriver]    = None
+        self._firmware0:       Optional[FirmwareImage] = None  # Core 0
+        self._firmware1:       Optional[FirmwareImage] = None  # Core 1
+        self._firmware_config: Optional[FirmwareImage] = None  # Config
+        self._firmware_boot:   Optional[FirmwareImage] = None  # Bootloader
+        self._worker:          Optional[FlashWorker]   = None
 
         self._setup_ui()
         self._connect_signals()
@@ -64,21 +73,52 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MCU Flash Tool")
         self.setMinimumSize(1000, 700)
 
-        # Widgets
+        # Shared widgets
         self._connection_panel = ConnectionPanel()
-        self._file_selector = FileSelector()
-        self._progress_bar = FlashProgressBar()
-        self._log_viewer = LogViewer()
+        self._progress_bar     = FlashProgressBar()
+        self._log_viewer       = LogViewer()
         self._status_indicator = StatusIndicator()
+
+        # --- Tab 0: Flash App (Core 0 + Core 1) ---
+        self._file_selector_c0 = FileSelector("Core 0 Firmware", default_address=0x00040000)
+        self._file_selector_c1 = FileSelector("Core 1 Firmware", default_address=0x00120000)
+        app_tab = QWidget()
+        app_layout = QVBoxLayout(app_tab)
+        app_layout.setContentsMargins(0, 4, 0, 0)
+        app_layout.addWidget(self._file_selector_c0)
+        app_layout.addWidget(self._file_selector_c1)
+        app_layout.addStretch()
+
+        # --- Tab 1: Flash Config (single file, app-layer protocol) ---
+        self._config_file_selector = FileSelector("Config Firmware", default_address=0x0026C000)
+        config_tab = QWidget()
+        config_layout = QVBoxLayout(config_tab)
+        config_layout.setContentsMargins(0, 4, 0, 0)
+        config_layout.addWidget(self._config_file_selector)
+        config_layout.addStretch()
+
+        # --- Tab 2: Flash Bootloader (single file) ---
+        self._boot_file_selector = FileSelector("Bootloader Firmware", default_address=0x00010000)
+        boot_tab = QWidget()
+        boot_layout = QVBoxLayout(boot_tab)
+        boot_layout.setContentsMargins(0, 4, 0, 0)
+        boot_layout.addWidget(self._boot_file_selector)
+        boot_layout.addStretch()
+
+        # Tab widget
+        self._tab_widget = QTabWidget()
+        self._tab_widget.addTab(app_tab,    "Flash App")
+        self._tab_widget.addTab(config_tab, "Flash Config")
+        self._tab_widget.addTab(boot_tab,   "Flash Bootloader")
 
         # Central layout
         central = QWidget()
         main_layout = QVBoxLayout(central)
 
-        # Top row: connection + file selector side by side
+        # Top row: connection panel + tab widget
         top_row = QHBoxLayout()
         top_row.addWidget(self._connection_panel)
-        top_row.addWidget(self._file_selector)
+        top_row.addWidget(self._tab_widget, stretch=1)
         main_layout.addLayout(top_row)
 
         # Middle: progress bar
@@ -97,9 +137,22 @@ class MainWindow(QMainWindow):
         self._connection_panel.connect_requested.connect(self._on_connect)
         self._connection_panel.disconnect_requested.connect(self._on_disconnect)
 
-        # File selector
-        self._file_selector.firmware_loaded.connect(self._on_firmware_loaded)
-        self._file_selector.firmware_cleared.connect(self._on_firmware_cleared)
+        # Tab switching
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
+
+        # App tab file selectors
+        self._file_selector_c0.firmware_loaded.connect(self._on_firmware0_loaded)
+        self._file_selector_c0.firmware_cleared.connect(self._on_firmware0_cleared)
+        self._file_selector_c1.firmware_loaded.connect(self._on_firmware1_loaded)
+        self._file_selector_c1.firmware_cleared.connect(self._on_firmware1_cleared)
+
+        # Config tab file selector
+        self._config_file_selector.firmware_loaded.connect(self._on_config_firmware_loaded)
+        self._config_file_selector.firmware_cleared.connect(self._on_config_firmware_cleared)
+
+        # Boot tab file selector
+        self._boot_file_selector.firmware_loaded.connect(self._on_boot_firmware_loaded)
+        self._boot_file_selector.firmware_cleared.connect(self._on_boot_firmware_cleared)
 
         # Progress bar buttons
         self._progress_bar.start_requested.connect(self._on_start_flash)
@@ -141,19 +194,70 @@ class MainWindow(QMainWindow):
         self._update_start_button()
 
     # ------------------------------------------------------------------
-    # Firmware handling
+    # Tab handling
     # ------------------------------------------------------------------
 
-    def _on_firmware_loaded(self, image: FirmwareImage) -> None:
-        self._firmware = image
+    def _on_tab_changed(self, index: int) -> None:
+        self._update_start_button()
+
+    # ------------------------------------------------------------------
+    # Firmware handling — app tab
+    # ------------------------------------------------------------------
+
+    def _on_firmware0_loaded(self, image: FirmwareImage) -> None:
+        self._firmware0 = image
         self._log_viewer.append_log(
-            f"Firmware loaded: {Path(image.file_path).name}, "
+            f"Core0 firmware loaded: {Path(image.file_path).name}, "
             f"{image.total_size:,} bytes"
         )
         self._update_start_button()
 
-    def _on_firmware_cleared(self) -> None:
-        self._firmware = None
+    def _on_firmware0_cleared(self) -> None:
+        self._firmware0 = None
+        self._update_start_button()
+
+    def _on_firmware1_loaded(self, image: FirmwareImage) -> None:
+        self._firmware1 = image
+        self._log_viewer.append_log(
+            f"Core1 firmware loaded: {Path(image.file_path).name}, "
+            f"{image.total_size:,} bytes"
+        )
+        self._update_start_button()
+
+    def _on_firmware1_cleared(self) -> None:
+        self._firmware1 = None
+        self._update_start_button()
+
+    # ------------------------------------------------------------------
+    # Firmware handling — config tab
+    # ------------------------------------------------------------------
+
+    def _on_config_firmware_loaded(self, image: FirmwareImage) -> None:
+        self._firmware_config = image
+        self._log_viewer.append_log(
+            f"Config firmware loaded: {Path(image.file_path).name}, "
+            f"{image.total_size:,} bytes"
+        )
+        self._update_start_button()
+
+    def _on_config_firmware_cleared(self) -> None:
+        self._firmware_config = None
+        self._update_start_button()
+
+    # ------------------------------------------------------------------
+    # Firmware handling — boot tab
+    # ------------------------------------------------------------------
+
+    def _on_boot_firmware_loaded(self, image: FirmwareImage) -> None:
+        self._firmware_boot = image
+        self._log_viewer.append_log(
+            f"Bootloader firmware loaded: {Path(image.file_path).name}, "
+            f"{image.total_size:,} bytes"
+        )
+        self._update_start_button()
+
+    def _on_boot_firmware_cleared(self) -> None:
+        self._firmware_boot = None
         self._update_start_button()
 
     # ------------------------------------------------------------------
@@ -161,25 +265,86 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _update_start_button(self) -> None:
-        """Enable Start Flash only when connected, firmware loaded, and idle."""
-        can_start = (
-            self._driver is not None
-            and self._driver.is_connected
-            and self._firmware is not None
-            and self._worker is None
-        )
+        """Enable Start Flash only when prerequisites are met and idle."""
+        driver_ok = self._driver is not None and self._driver.is_connected
+        idle      = self._worker is None
+        tab       = self._tab_widget.currentIndex()
+
+        if tab == 0:    # Flash App
+            can_start = (
+                driver_ok
+                and (self._firmware0 is not None or self._firmware1 is not None)
+                and idle
+            )
+        elif tab == 1:  # Flash Config
+            can_start = (
+                driver_ok
+                and self._firmware_config is not None
+                and idle
+            )
+        else:           # Flash Bootloader
+            can_start = (
+                driver_ok
+                and self._firmware_boot is not None
+                and idle
+            )
+
         self._progress_bar.set_start_enabled(can_start)
 
     def _on_start_flash(self) -> None:
-        if not self._driver or not self._firmware:
-            return
+        tab = self._tab_widget.currentIndex()
 
-        # Build Flasher
-        flasher = Flasher(
-            driver=self._driver,
-            firmware=self._firmware,
-            can_settings=self._driver.settings,
-        )
+        if tab == 0:
+            if not self._driver or (self._firmware0 is None and self._firmware1 is None):
+                return
+            # Re-read from disk so the latest build is always flashed
+            if self._firmware0 is not None and not self._file_selector_c0.reload():
+                QMessageBox.critical(self, "Firmware Error",
+                                     "Failed to reload Core 0 firmware from disk.")
+                return
+            if self._firmware1 is not None and not self._file_selector_c1.reload():
+                QMessageBox.critical(self, "Firmware Error",
+                                     "Failed to reload Core 1 firmware from disk.")
+                return
+            flasher: Union[Flasher, BootFlasher] = Flasher(
+                driver=self._driver,
+                firmware_core0=self._firmware0,
+                firmware_core1=self._firmware1,
+                can_settings=self._driver.settings,
+            )
+            if self._firmware0 and self._firmware1:
+                start_msg = "=== Dual-core app flash started ==="
+            elif self._firmware0:
+                start_msg = "=== Core0-only flash started ==="
+            else:
+                start_msg = "=== Core1-only flash started ==="
+        elif tab == 1:
+            if not self._driver or not self._firmware_config:
+                return
+            if not self._config_file_selector.reload():
+                QMessageBox.critical(self, "Firmware Error",
+                                     "Failed to reload config firmware from disk.")
+                return
+            flasher = Flasher(
+                driver=self._driver,
+                firmware_core0=self._firmware_config,
+                firmware_core1=None,
+                can_settings=self._driver.settings,
+            )
+            start_msg = "=== Config flash started ==="
+        else:
+            if not self._driver or not self._firmware_boot:
+                return
+            if not self._boot_file_selector.reload():
+                QMessageBox.critical(self, "Firmware Error",
+                                     "Failed to reload bootloader firmware from disk.")
+                return
+            flasher = BootFlasher(
+                driver=self._driver,
+                firmware=self._firmware_boot,
+                can_settings=self._driver.settings,
+            )
+            start_msg = "=== Bootloader flash started ==="
 
         # Create and wire worker thread
         self._worker = FlashWorker(flasher, parent=self)
@@ -190,14 +355,17 @@ class MainWindow(QMainWindow):
         self._worker.finished_ok.connect(self._on_flash_finished)
         self._worker.finished_error.connect(self._on_flash_error)
 
-        # Lock down UI
+        # Lock down UI (disable tab switching during flash)
+        self._tab_widget.setEnabled(False)
         self._connection_panel.set_flashing_state(True)
-        self._file_selector.set_enabled_state(False)
+        self._file_selector_c0.set_enabled_state(False)
+        self._file_selector_c1.set_enabled_state(False)
+        self._config_file_selector.set_enabled_state(False)
+        self._boot_file_selector.set_enabled_state(False)
         self._progress_bar.set_flashing_state(True)
         self._progress_bar.reset()
 
-        # Go
-        self._log_viewer.append_log("=== Flash started ===")
+        self._log_viewer.append_log(start_msg)
         self._worker.start()
 
     def _on_abort_flash(self) -> None:
@@ -206,7 +374,14 @@ class MainWindow(QMainWindow):
             self._log_viewer.append_log("Abort requested...")
 
     def _on_flash_finished(self) -> None:
-        self._log_viewer.append_log("=== Flash completed successfully ===")
+        tab = self._tab_widget.currentIndex()
+        if tab == 0:
+            msg = "=== App flash completed successfully ==="
+        elif tab == 1:
+            msg = "=== Config flash completed successfully ==="
+        else:
+            msg = "=== Bootloader flash completed successfully ==="
+        self._log_viewer.append_log(msg)
         self._progress_bar.update_progress(100, "Flash Complete!")
         self._status_indicator.set_message("Flash completed successfully")
         self._cleanup_after_flash()
@@ -220,8 +395,12 @@ class MainWindow(QMainWindow):
     def _cleanup_after_flash(self) -> None:
         """Re-enable UI after flash completes/fails/aborts."""
         self._worker = None
+        self._tab_widget.setEnabled(True)
         self._connection_panel.set_flashing_state(False)
-        self._file_selector.set_enabled_state(True)
+        self._file_selector_c0.set_enabled_state(True)
+        self._file_selector_c1.set_enabled_state(True)
+        self._config_file_selector.set_enabled_state(True)
+        self._boot_file_selector.set_enabled_state(True)
         self._progress_bar.set_flashing_state(False)
         self._update_start_button()
 

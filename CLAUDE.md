@@ -21,7 +21,7 @@ UI Layer (PySide6)
   └─ flash_worker.py → FlashWorker(QThread) bridges Flasher callbacks to Qt signals
   └─ widgets/ → ConnectionPanel, FileSelector, FlashProgressBar, LogViewer, StatusIndicator
 Flash Layer
-  └─ flasher.py  → orchestrates 14-step OEM sequence via callbacks (on_progress, on_log, on_state_changed)
+  └─ flasher.py  → orchestrates up-to-18-step flash sequence (Core0/Core1 optional) via callbacks (on_progress, on_log, on_state_changed)
   └─ hex_parser.py → parses .hex/.s19/.bin via bincopy into FirmwareImage with segments
 UDS Layer (ISO 14229)
   └─ services.py → UDSClient wraps all 7 UDS services, handles NRC 0x78 ResponsePending loop
@@ -34,29 +34,43 @@ Config
   └─ constants.py → enums: UDSServiceID, NRC, IsoTpFrameType, FlowStatus + protocol constants
 ```
 
-**Key data flow**: `Flasher` creates `IsoTpTransport(PCANDriver)` → creates `UDSClient(transport)` + `SecurityManager` → runs steps 1-14 sequentially, reporting progress via callbacks.
+**Key data flow**: `Flasher` creates `IsoTpTransport(PCANDriver)` → creates `UDSClient(transport)` + `SecurityManager` → runs steps sequentially (session setup always, Core0 cycle only if firmware provided, Core1 cycle only if firmware provided, ECUReset always), reporting progress via callbacks.
 
 **Threading model**: `FlashWorker(QThread)` runs `Flasher.execute()` off the main thread. Flasher callbacks are assigned to `Signal.emit` — Qt auto-queues cross-thread delivery so UI slots run on the main thread.
 
 ## CAN Configuration Defaults
 - **Request ID (Tester → ECU)**: 0x7A2 / **Response ID (ECU → Tester)**: 0x7AA (configurable)
-- **CAN FD**: enabled (fd=True, bitrate_switch=True), DLC always 8 bytes
+- **CAN FD**: disabled by default (fd=False); enable via UI for CAN FD with bitrate switch
 - **Arbitration**: 500 kbit/s / **Data**: 2 Mbit/s
-- **Padding**: Tester uses 0xCC (IsoTpSettings default), ECU uses 0x55
+- **Padding**: Tester uses 0x00 (IsoTpSettings default), ECU uses 0x55
 
-## Flashing Workflow (14 steps, from OEM trace)
+## Flashing Workflow (up to 18 steps; Core0/Core1 each optional, from OEM trace)
+
+**Session setup (shared, run once):**
 1. DiagnosticSessionControl (0x10 0x03) — Extended Session
 2. SecurityAccess L1/L2 (0x27 0x01/0x02) — TEA key with k=[0x11,0x22,0x33,0x44]
 3. RoutineControl (0x31 0x01 0x0203) — Pre-programming check
 4. DiagnosticSessionControl (0x10 0x02) — Programming Session
 5. SecurityAccess L3/L4 (0x27 0x03/0x04) — TEA key with k=[0x55,0x66,0x77,0x88]
-6. RoutineControl (0x31 0x01 0xFF00) — Erase Memory (format=0x44, ~2.6s)
-7. RequestDownload (0x34) — addr + size, format=0x44, no compression
-8. TransferData (0x36) — max 2048 bytes/block, counter wraps 01→FF→00
+
+**Core0 flash:**
+6. RoutineControl (0x31 0x01 0xFF00) — Erase Core0 memory (format=0x44, ~2.6s)
+7. RequestDownload (0x34) — Core0 addr + size, format=0x44, no compression
+8. TransferData (0x36) — Core0 data, max 2048 bytes/block, counter wraps 01→FF→00
 9. RequestTransferExit (0x37)
-10. RoutineControl (0x31 0x01 0x0202) — CRC checksum (~2.3s)
-11. RoutineControl (0x31 0x01 0xFF01) — Check dependencies
-12. ECUReset (0x11 0x01) — Hard Reset
+10. RoutineControl (0x31 0x01 0x0202) — This Step have two operations:First, Sha256 check Core1 (MCU verifies received data);Second, CRC32 Validation;
+11. RoutineControl (0x31 0x01 0xFF01) — Check Core0 dependencies
+
+**Core1 flash:**
+12. RoutineControl (0x31 0x01 0xFF00) — Erase Core1 memory (format=0x44, ~2.6s)
+13. RequestDownload (0x34) — Core1 addr + size, format=0x44, no compression
+14. TransferData (0x36) — Core1 data, max 2048 bytes/block, counter wraps 01→FF→00
+15. RequestTransferExit (0x37)
+16. RoutineControl (0x31 0x01 0x0202) — This Step have two operations:First, Sha256 check Core1 (MCU verifies received data);Second, CRC32 Validation;
+17. RoutineControl (0x31 0x01 0xFF01) — Check Core1 dependencies
+
+**Finalize:**
+18. ECUReset (0x11 0x01) — Hard Reset
 
 ## Seed-Key Algorithm (TEA variant)
 Reference implementation: `Seed_key.txt` (C code). Python implementation: `src/uds/security.py`.
@@ -83,3 +97,6 @@ Reference implementation: `Seed_key.txt` (C code). Python implementation: `src/u
 - Assume PCAN USB as default hardware
 - Ask before making architectural changes
 - When the user asks a question or describes a problem, first rephrase it in polished, natural English before answering
+
+## Supplementary item
+- Due to my first language isn't english, I require you polish my question in more natural english language every time!

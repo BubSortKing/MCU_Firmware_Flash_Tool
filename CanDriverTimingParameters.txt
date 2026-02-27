@@ -1,0 +1,25 @@
+static ccan_baud_t ccan1_baud = {
+  /* clk200m, nomibaud 500k = (ref_clk)/((1+(proseg+1)+(seg1+1)+(seg2+1))*(perdiv+1)),
+  sampling point 80% = (1+(proseg+1)+(seg1+1))/((1+(proseg+1)+(seg1+1)+(seg2+1)) */
+  .can_nomibit =
+    {
+      .can_proseg = (uint8)20U, /* propseg  < 2^6 */
+      .can_seg1   = (uint8)9U,  /* seg1 < 2^5 */
+      .can_seg2   = (uint8)7U,  /* 0 < seg2 < 2^5 */
+      .can_prediv = (uint16)9U, /* PreScaller < 2^10 */
+      .can_sjw    = (uint8)7U,  /* SJW < 2^5 */
+    },
+ /* clk 200m, databaud = (ref_clk)/((1+proseg+(seg1+1)+(seg2+1))*(perdiv+1)),
+  sampling point 80% = (1+proseg+(seg1+1))/((1+proseg+(seg1+1)+(seg2+1)) */
+  .can_databit =
+    {
+      .can_proseg = (uint8)4U,  /* FdPropseg  < 2^5 */
+      .can_seg1   = (uint8)2U,  /* FdSeg1 < 2^3, 0 < (FdPropseg+FdSeg1) */
+      .can_seg2   = (uint8)1U,  /* 0 < FdSeg2 < 2^3 */
+      .can_prediv = (uint16)9U, /* PreScaller < 2^10 */
+      .can_sjw    = (uint8)1U,  /* SJW  < 2^3 */
+    },
+  .can_tasd_val = 12U,
+  .can_tdc_en   = TRUE,
+  .can_tdc_val  = 16U  /* uint: 1/CAN_CLK, requirement: (tdc_val * uint) < (1/baudrate) */
+};

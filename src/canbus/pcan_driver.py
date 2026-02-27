@@ -79,24 +79,29 @@ class PCANDriver:
             )
 
         try:
+            # Always call PCAN_InitializeFD() (fd=True) so the explicit nom_*
+            # timing parameters are honoured by the PCAN driver.  When fd=False
+            # (classic CAN, the default), python-can would call the legacy
+            # PCAN_Initialize() API which hard-codes the sample point to ~87.5%
+            # and silently ignores all nom_* kwargs — causing Form Errors
+            # because the MCU expects 80%.  The PCAN USB FD hardware is fully
+            # backward-compatible: classic CAN frames (is_fd=False) are sent
+            # and received normally on an FD-initialised channel.
             bus_kwargs = dict(
                 interface=s.interface,
                 channel=s.channel,
                 bitrate=s.bitrate,
+                fd=True,            # forces PCAN_InitializeFD() → nom_* used
                 f_clock_mhz=s.f_clock_mhz,
+                nom_brp=s.nom_brp,
+                nom_tseg1=s.nom_tseg1,
+                nom_tseg2=s.nom_tseg2,
+                nom_sjw=s.nom_sjw,
+                data_brp=s.data_brp,
+                data_tseg1=s.data_tseg1,
+                data_tseg2=s.data_tseg2,
+                data_sjw=s.data_sjw,
             )
-            if s.fd:
-                bus_kwargs.update(
-                    fd=True,
-                    nom_brp=s.nom_brp,
-                    nom_tseg1=s.nom_tseg1,
-                    nom_tseg2=s.nom_tseg2,
-                    nom_sjw=s.nom_sjw,
-                    data_brp=s.data_brp,
-                    data_tseg1=s.data_tseg1,
-                    data_tseg2=s.data_tseg2,
-                    data_sjw=s.data_sjw,
-                )
             self._bus = can.Bus(**bus_kwargs)
         except can.CanError as exc:
             logger.error("CAN connection failed: %s", exc)
