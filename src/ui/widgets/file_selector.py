@@ -65,6 +65,11 @@ class FileSelector(QGroupBox):
         self._browse_btn.clicked.connect(self._on_browse)
         file_row.addWidget(self._browse_btn)
 
+        self._clear_btn = QPushButton("Clear")
+        self._clear_btn.clicked.connect(self._on_clear)
+        self._clear_btn.setEnabled(False)
+        file_row.addWidget(self._clear_btn)
+
         form.addRow("File:", file_row)
 
         # Download address — always shown once a file is loaded
@@ -86,6 +91,20 @@ class FileSelector(QGroupBox):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _on_clear(self) -> None:
+        """Clear the current file selection and reset the widget state."""
+        self._file_path_edit.clear()
+        self._info_label.clear()
+        self._base_addr_label.setVisible(False)
+        self._base_addr_edit.setVisible(False)
+        self._base_addr_edit.blockSignals(True)
+        self._base_addr_edit.setText(f"0x{self._default_address:08X}")
+        self._base_addr_edit.blockSignals(False)
+        self._firmware = None
+        self._is_bin = False
+        self._clear_btn.setEnabled(False)
+        self.firmware_cleared.emit()
 
     def _on_browse(self) -> None:
         current = self._file_path_edit.text()
@@ -167,9 +186,11 @@ class FileSelector(QGroupBox):
                 self._base_addr_edit.blockSignals(False)
             self._firmware = image
             self._update_info(image)
+            self._clear_btn.setEnabled(True)
             self.firmware_loaded.emit(image)
         except FirmwareParseError as exc:
             self._firmware = None
+            self._clear_btn.setEnabled(False)
             self._info_label.setText(f"Error: {exc}")
             self.firmware_cleared.emit()
 
@@ -212,3 +233,8 @@ class FileSelector(QGroupBox):
         """Enable/disable the file selector (during flashing)."""
         self._browse_btn.setEnabled(enabled)
         self._base_addr_edit.setEnabled(enabled)
+        # Clear button is only re-enabled if a file is actually loaded
+        if enabled:
+            self._clear_btn.setEnabled(self._firmware is not None)
+        else:
+            self._clear_btn.setEnabled(False)

@@ -5,9 +5,14 @@ from pathlib import Path
 from typing import Optional, Union
 
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
+    QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -28,6 +33,8 @@ from ui.widgets import (
 )
 
 logger = logging.getLogger(__name__)
+
+_BOOT_PASSWORD = "Gpal7853!"
 
 
 class MainWindow(QMainWindow):
@@ -58,6 +65,7 @@ class MainWindow(QMainWindow):
         self._firmware_config: Optional[FirmwareImage] = None  # Config
         self._firmware_boot:   Optional[FirmwareImage] = None  # Bootloader
         self._worker:          Optional[FlashWorker]   = None
+        self._boot_tab_unlocked: bool = False
 
         self._setup_ui()
         self._connect_signals()
@@ -106,10 +114,11 @@ class MainWindow(QMainWindow):
         boot_layout.addStretch()
 
         # Tab widget
+        self._boot_tab = boot_tab  # stored for unlock; not added to tab widget at startup
+
         self._tab_widget = QTabWidget()
         self._tab_widget.addTab(app_tab,    "Flash App")
         self._tab_widget.addTab(config_tab, "Flash Config")
-        self._tab_widget.addTab(boot_tab,   "Flash Bootloader")
 
         # Central layout
         central = QWidget()
@@ -139,6 +148,7 @@ class MainWindow(QMainWindow):
 
         # Tab switching
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
+        self._tab_widget.tabBar().tabBarDoubleClicked.connect(self._on_tab_double_clicked)
 
         # App tab file selectors
         self._file_selector_c0.firmware_loaded.connect(self._on_firmware0_loaded)
@@ -199,6 +209,69 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, index: int) -> None:
         self._update_start_button()
+
+    def _on_tab_double_clicked(self, index: int) -> None:
+        """Unlock the hidden bootloader tab via password dialog with show/hide toggle."""
+        if self._boot_tab_unlocked:
+            return
+
+        # --- Build custom dialog ---
+        dialog = QDialog(self)
+        dialog.setWindowTitle("LastResort")
+        layout = QVBoxLayout(dialog)
+
+        layout.addWidget(QLabel("Enter password:"))
+
+        row = QHBoxLayout()
+        pwd_edit = QLineEdit()
+        pwd_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        row.addWidget(pwd_edit)
+
+        eye_btn = QPushButton("\U0001F441")   # 👁 eye character
+        eye_btn.setCheckable(True)
+        eye_btn.setFixedWidth(32)
+        eye_btn.setToolTip("Show / hide password")
+        eye_btn.toggled.connect(
+            lambda checked: pwd_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        )
+        row.addWidget(eye_btn)
+        layout.addLayout(row)
+
+        # Error hint — hidden until a wrong attempt
+        error_label = QLabel("Incorrect password. Please try again.")
+        error_label.setStyleSheet("color: red;")
+        error_label.hide()
+        layout.addWidget(error_label)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+
+        def _try_accept() -> None:
+            if pwd_edit.text() == _BOOT_PASSWORD:
+                dialog.accept()
+            else:
+                error_label.show()
+                dialog.adjustSize()
+                pwd_edit.clear()
+                pwd_edit.setFocus()
+
+        btn_box.accepted.connect(_try_accept)
+        btn_box.rejected.connect(dialog.reject)
+        layout.addWidget(btn_box)
+
+        # Let Enter key submit the dialog
+        pwd_edit.returnPressed.connect(_try_accept)
+        # ---
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._boot_tab_unlocked = True
+            self._tab_widget.addTab(self._boot_tab, "LastResort")
+            self._tab_widget.setCurrentIndex(self._tab_widget.count() - 1)
+            self._log_viewer.append_log("Bootloader tab unlocked.")
+            self._update_start_button()
 
     # ------------------------------------------------------------------
     # Firmware handling — app tab
